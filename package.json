@@ -8,6 +8,6 @@
   "dependencies": {
     "babelify": "^6.0.2",
     "browserify": "^9.0.8",
-    "deku": "^0.2.0"
+    "deku": "^0.2.1"
   }
 }

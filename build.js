@@ -22,11 +22,11 @@ function render(component) {
   var props = component.props;
   var state = component.state;
 
-  var rows = props.databases.map(function (db, i) {
+  var rows = props.databases.map(function (db) {
     var topFive = db.topFiveQueries.map(function (q, i) {
       return _element.element(
         'td',
-        { 'class': '{elapsedClassName(q.elapsed)}', key: i },
+        { 'class': elapsedClassName(q.elapsed), key: i },
         formatElapsed(q.elapsed),
         _element.element(
           'div',
@@ -42,18 +42,18 @@ function render(component) {
     });
     return _element.element(
       'tr',
-      { key: i },
+      { key: db.name },
       _element.element(
         'td',
-        { 'class': 'dbname' },
+        { 'class': 'dbname', key: 'name' },
         db.name
       ),
       _element.element(
         'td',
-        { 'class': 'query-count' },
+        { 'class': 'query-count', key: 'count' },
         _element.element(
           'span',
-          { 'class': '{countClassName(sampleLength(db))}' },
+          { 'class': countClassName(sampleLength(db)) },
           sampleLength(db)
         )
       ),
@@ -235,6 +235,10 @@ tree.set('databases', _getData.getData());
 setInterval(function () {
   tree.set('databases', _getData.getData());
 }, 0);
+
+// setTimeout(function(){
+//   tree.set('databases', getData())
+// }, 2000)
 
 _deku$render$element.render(tree, document.querySelector('#app'));
 
@@ -892,7 +896,7 @@ function render (app, container, opts) {
 
       // Updated
       if (leftNode && rightNode) {
-        diffNode('.' + leftNode.index, entityId, leftNode, rightNode, childNodes[leftNode.index])
+        diffNode(path + '.' + leftNode.index, entityId, leftNode, rightNode, childNodes[leftNode.index])
         positions[rightNode.index] = el.childNodes[leftNode.index]
       }
     }
@@ -933,8 +937,10 @@ function render (app, container, opts) {
     }
 
     // Reposition all the elements
-    positions.forEach(function(childEl){
-      el.appendChild(childEl);
+    positions.forEach(function(childEl, i){
+      if (i !== childNodes.indexOf(childEl)) {
+        el.appendChild(childEl);
+      }
     })
   }
 
@@ -2514,7 +2520,7 @@ Pool.prototype.push = function(el) {
     if (el.tagName.toLowerCase() !== this.tagName) {
         return;
     }
-    
+
     this.storage.push(el);
 };
 
@@ -2558,7 +2564,7 @@ function iterativelyWalk(nodes, cb) {
     if (!('length' in nodes)) {
         nodes = [nodes]
     }
-    
+
     nodes = slice.call(nodes)
 
     while(nodes.length) {

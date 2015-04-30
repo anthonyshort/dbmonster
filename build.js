@@ -26,7 +26,7 @@ function render(component) {
     var topFive = db.topFiveQueries.map(function (q, i) {
       return _element.element(
         'td',
-        { 'class': elapsedClassName(q.elapsed), key: i },
+        { 'class': elapsedClassName(q.elapsed) },
         formatElapsed(q.elapsed),
         _element.element(
           'div',
@@ -42,15 +42,15 @@ function render(component) {
     });
     return _element.element(
       'tr',
-      { key: db.name },
+      null,
       _element.element(
         'td',
-        { 'class': 'dbname', key: 'name' },
+        { 'class': 'dbname' },
         db.name
       ),
       _element.element(
         'td',
-        { 'class': 'query-count', key: 'count' },
+        { 'class': 'query-count' },
         _element.element(
           'span',
           { 'class': countClassName(sampleLength(db)) },
@@ -257,13 +257,15 @@ module.exports = Application
 
 /**
  * Create a new `Application`.
+ *
+ * @param {Object} element Optional initial element
  */
 
-function Application () {
-  if (!(this instanceof Application)) return new Application()
+function Application (element) {
+  if (!(this instanceof Application)) return new Application(element)
   this.options = {}
   this.sources = {}
-  this.element = null
+  this.element = element
 }
 
 /**
@@ -372,7 +374,6 @@ var isDom = require('is-dom')
 var uid = require('get-uid')
 var throttle = require('per-frame')
 var keypath = require('object-path')
-var omit = require('object-omit')
 var type = require('component-type')
 var utils = require('./utils')
 var defaults = utils.defaults
@@ -580,8 +581,8 @@ function render (app, container, opts) {
     trigger('beforeUnmount', entity, [entity.context, entity.nativeElement])
     unmountChildren(entityId)
     removeAllEvents(entityId)
-    entities = omit(entities, String(entityId))
-    children = omit(children, String(entityId))
+    delete entities[entityId]
+    delete children[entityId]
   }
 
   /**
@@ -624,7 +625,7 @@ function render (app, container, opts) {
 
   function invalidate () {
     if (!options.batching) {
-      render()
+      if (!isRendering) render()
     } else {
       if (!frameId) frameId = raf(render)
     }
@@ -662,7 +663,8 @@ function render (app, container, opts) {
       currentNativeElement = toNative(rootId, '0', currentElement)
       container.appendChild(currentNativeElement)
     } else if (currentElement !== app.element) {
-      patch(rootId, currentElement, app.element, currentNativeElement)
+      currentNativeElement = patch(rootId, currentElement, app.element, currentNativeElement)
+      currentElement = app.element
       updateChildren(rootId)
     } else {
       updateChildren(rootId)
@@ -697,7 +699,6 @@ function render (app, container, opts) {
     var currentTree = entity.virtualElement
     var nextProps = entity.pendingProps
     var nextState = entity.pendingState
-    var el = entity.nativeElement
     var previousState = entity.context.state
     var previousProps = entity.context.props
 
@@ -712,7 +713,7 @@ function render (app, container, opts) {
     var nextTree = renderEntity(entity)
 
     // apply new virtual tree to native dom.
-    patch(entityId, currentTree, nextTree, el)
+    entity.nativeElement = patch(entityId, currentTree, nextTree, entity.nativeElement)
     entity.virtualElement = nextTree
     updateChildren(entityId)
 
@@ -836,7 +837,7 @@ function render (app, container, opts) {
    */
 
   function patch (entityId, prev, next, el) {
-    diffNode('0', entityId, prev, next, el)
+    return diffNode('0', entityId, prev, next, el)
   }
 
   /**
@@ -862,6 +863,7 @@ function render (app, container, opts) {
 
   function diffText (previous, current, el) {
     if (current.data !== previous.data) el.data = current.data
+    return el
   }
 
   /**
@@ -869,77 +871,144 @@ function render (app, container, opts) {
    */
 
   function diffChildren (path, entityId, prev, next, el) {
-    // We'll store the elements in this array in the order they
-    // should exist in the DOM. At the end, we'll loop through this array
-    // of elements in reposition the elements all at once.
     var positions = []
+    var hasKeys = false
     var childNodes = Array.prototype.slice.apply(el.childNodes)
     var leftKeys = prev.children.reduce(keyMapReducer, {})
     var rightKeys = next.children.reduce(keyMapReducer, {})
-    var j = -1
+    var currentChildren = assign({}, children[entityId])
 
     function keyMapReducer(acc, child) {
-      if (child.key) acc[child.key] = child
+      if (child.key != null) {
+        acc[child.key] = child
+        hasKeys = true
+      }
       return acc
     }
 
     // Diff all of the nodes that have keys. This lets us re-used elements
     // instead of overriding them and lets us move them around.
-    for (var key in rightKeys) {
-      var rightNode = rightKeys[key]
-      var leftNode = leftKeys[key]
+    if (hasKeys) {
 
-      // New Node
-      if (!leftNode) {
-        positions[rightNode.index] = toNative(entityId, '.' + rightNode.index, right)
+      // Removals
+      for (var key in leftKeys) {
+        if (rightKeys[key] == null) {
+          var leftNode = leftKeys[key]
+          var leftPath = path + '.' + leftNode.index
+          removeElement(
+            entityId,
+            leftPath,
+            childNodes[leftNode.index]
+          )
+        }
       }
 
-      // Updated
-      if (leftNode && rightNode) {
-        diffNode(path + '.' + leftNode.index, entityId, leftNode, rightNode, childNodes[leftNode.index])
-        positions[rightNode.index] = el.childNodes[leftNode.index]
-      }
-    }
+      // Update nodes
+      for (var key in rightKeys) {
+        var rightNode = rightKeys[key]
+        var leftNode = leftKeys[key]
 
-    // Removals
-    for (var key in leftKeys) {
-      var leftNode = leftKeys[key]
-      if (!rightKeys[key]) {
-        removeElement(entityId, path + '.' + leftNode.index, childNodes[leftNode.index])
-      }
-    }
+        // We only want updates for now
+        if (leftNode == null) continue
 
-    // Now diff all of the nodes that don't have keys
-    for (var i = 0; i < next.children.length; i++) {
-      var leftNode = prev.children[i]
-      var rightNode = next.children[i]
+        var rightPath = path + '.' + rightNode.index
+        var leftPath = path + '.' + leftNode.index
 
-      // New Node
-      if (leftNode == null && !rightNode.key) {
-        positions[rightNode.index] = toNative(entityId, path + '.' + rightNode.index, rightNode)
+        // Updated
+        positions[rightNode.index] = diffNode(
+          leftPath,
+          entityId,
+          leftNode,
+          rightNode,
+          childNodes[leftNode.index]
+        )
       }
 
-      // Updated
-      if (leftNode && rightNode && !leftNode.key && !rightNode.key) {
-        diffNode(path + '.' + leftNode.index, entityId, leftNode, rightNode, childNodes[leftNode.index])
-        positions[leftNode.index] = el.childNodes[leftNode.index]
+      // Update the positions of all child components and event handlers
+      for (var key in rightKeys) {
+        var rightNode = rightKeys[key]
+        var leftNode = leftKeys[key]
+
+        // We just want elements that have moved around
+        if (leftNode == null || leftNode.index === rightNode.index) continue
+
+        var rightPath = path + '.' + rightNode.index
+        var leftPath = path + '.' + leftNode.index
+
+        // Update all the child component path positions to match
+        // the latest positions if they've changed. This is a bit hacky.
+        for (var childPath in currentChildren) {
+          var childId = currentChildren[childPath]
+          if (leftPath === childPath) {
+            delete children[entityId][childPath]
+            children[entityId][rightPath] = childId
+          }
+        }
       }
-    }
 
-    // Removals
-    for (var i = 0; i < prev.children.length; i++) {
-      var leftNode = prev.children[i]
-      var rightNode = next.children[i]
+      // Now add all of the new nodes last in case their path
+      // would have conflicted with one of the previous paths.
+      for (var key in rightKeys) {
+        var rightNode = rightKeys[key]
+        var rightPath = path + '.' + rightNode.index
 
-      if (rightNode == null && !leftNode.key) {
-        removeElement(entityId, path + '.' + leftNode.index, childNodes[leftNode.index])
+        if (leftKeys[key] == null) {
+          positions[rightNode.index] = toNative(
+            entityId,
+            rightPath,
+            rightNode
+          )
+        }
+      }
+
+    } else {
+      var maxLength = Math.max(prev.children.length, next.children.length)
+
+      // Now diff all of the nodes that don't have keys
+      for (var i = 0; i < maxLength; i++) {
+        var leftNode = prev.children[i]
+        var rightNode = next.children[i]
+
+        // Removals
+        if (rightNode == null) {
+          removeElement(
+            entityId,
+            path + '.' + leftNode.index,
+            childNodes[leftNode.index]
+          )
+        }
+
+        // New Node
+        if (leftNode == null) {
+          positions[rightNode.index] = toNative(
+            entityId,
+            path + '.' + rightNode.index,
+            rightNode
+          )
+        }
+
+        // Updated
+        if (leftNode && rightNode) {
+          positions[leftNode.index] = diffNode(
+            path + '.' + leftNode.index,
+            entityId,
+            leftNode,
+            rightNode,
+            childNodes[leftNode.index]
+          )
+        }
       }
     }
 
     // Reposition all the elements
-    positions.forEach(function(childEl, i){
-      if (i !== childNodes.indexOf(childEl)) {
-        el.appendChild(childEl);
+    positions.forEach(function (childEl, newPosition) {
+      var target = el.childNodes[newPosition]
+      if (childEl !== target) {
+        if (target) {
+          el.insertBefore(childEl, target)
+        } else {
+          el.appendChild(childEl)
+        }
       }
     })
   }
@@ -976,9 +1045,10 @@ function render (app, container, opts) {
 
   function diffComponent (path, entityId, prev, next, el) {
     if (next.component !== prev.component) {
-      replaceElement(entityId, path, el, next)
+      return replaceElement(entityId, path, el, next)
     } else {
       updateEntityProps(children[entityId][path], next.props)
+      return el
     }
   }
 
@@ -990,6 +1060,7 @@ function render (app, container, opts) {
     if (next.tagName !== prev.tagName) return replaceElement(entityId, path, el, next)
     diffAttributes(prev, next, el, entityId, path)
     diffChildren(path, entityId, prev, next, el)
+    return el
   }
 
   /**
@@ -1007,17 +1078,18 @@ function render (app, container, opts) {
 
   function removeElement (entityId, path, el) {
     var childrenByPath = children[entityId]
+    var childId = childrenByPath[path]
     var removals = []
 
     // If the path points to a component we should use that
     // components element instead, because it might have moved it.
-    if (childrenByPath[path]) {
-      var childId = childrenByPath[path]
+    if (childId) {
       var child = entities[childId]
       el = child.nativeElement
       unmountEntity(childId)
       removals.push(path)
     } else {
+
       // Just remove the text node
       if (!isElement(el)) return el.parentNode.removeChild(el)
 
@@ -1033,7 +1105,9 @@ function render (app, container, opts) {
 
     // Remove the paths from the object without touching the
     // old object. This keeps the object using fast properties.
-    children[entityId] = omit(children[entityId], removals)
+    removals.forEach(function (path) {
+      delete children[entityId][path]
+    })
 
     // Remove it from the DOM
     el.parentNode.removeChild(el)
@@ -1079,11 +1153,6 @@ function render (app, container, opts) {
       parent.appendChild(newEl)
     }
 
-    // Update the root node if it's been replaced.
-    if (currentNativeElement === el) {
-      currentNativeElement = newEl
-    }
-
     // update all `entity.nativeElement` references.
     for (var id in entities) {
       var entity = entities[id]
@@ -1091,6 +1160,8 @@ function render (app, container, opts) {
         entity.nativeElement = newEl
       }
     }
+
+    return newEl
   }
 
   /**
@@ -1408,7 +1479,11 @@ function render (app, container, opts) {
   function addEvent (entityId, path, eventType, fn) {
     keypath.set(handlers, [entityId, path, eventType], throttle(function (e) {
       var entity = entities[entityId]
-      fn.call(null, e, entity.context, setState(entity))
+      if (entity) {
+        fn.call(null, e, entity.context, setState(entity))
+      } else {
+        fn.call(null, e)
+      }
     }))
   }
 
@@ -1537,7 +1612,24 @@ function Entity (component, props) {
 function canPool(tagName) {
   return avoidPooling.indexOf(tagName) < 0;
 }
-},{"./utils":8,"component-each":11,"component-raf":16,"component-type":17,"dom-pool":18,"dom-walk":19,"get-uid":20,"is-dom":21,"object-assign":22,"object-omit":23,"object-path":27,"per-frame":28}],7:[function(require,module,exports){
+
+/**
+ * Get a nested node using a path
+ *
+ * @param {HTMLElement} el   The root node '0'
+ * @param {String} path The path string eg. '0.2.43'
+ */
+
+function getNodeAtPath(el, path) {
+  var parts = path.split('.')
+  parts.shift()
+  while (parts.length) {
+    el = el.childNodes[parts.pop()]
+  }
+  return el
+}
+
+},{"./utils":8,"component-each":11,"component-raf":16,"component-type":17,"dom-pool":18,"dom-walk":19,"get-uid":20,"is-dom":21,"object-assign":22,"object-path":23,"per-frame":24}],7:[function(require,module,exports){
 var utils = require('./utils')
 var defaults = utils.defaults
 
@@ -1671,7 +1763,6 @@ exports.defaults = function(options, defaults) {
 var type = require('component-type')
 var slice = require('sliced')
 var uid = require('get-uid')
-var omit = require('object-omit')
 var flatten = require('array-flatten')
 
 /**
@@ -1731,40 +1822,25 @@ function virtual (type, props, children) {
     children = [ children ]
   }
 
-  children = flatten(children, 2)
-    .filter(notEmpty)
-    .map(normalize)
+  children = flatten(children, 1).reduce(normalize, [])
 
   // pull the key out from the data.
-  var key = props.key
-  var filteredProps = omit(props, 'key')
+  var key = 'key' in props ? String(props.key) : null
+  delete props['key']
 
   // if you pass in a function, it's a `Component` constructor.
   // otherwise it's an element.
   var node
   if (typeof type === 'string') {
-    node = new ElementNode(type, filteredProps, key, children)
+    node = new ElementNode(type, props, key, children)
   } else {
-    node = new ComponentNode(type, filteredProps, key, children)
+    node = new ComponentNode(type, props, key, children)
   }
 
   // set the unique ID
-  node.id = uid()
   node.index = 0
 
   return node
-}
-
-/**
- * Remove null/undefined values from the array
- *
- * @param {*} value
- *
- * @return {Boolean}
- */
-
-function notEmpty (value) {
-  return value !== null && value !== undefined
 }
 
 /**
@@ -1776,15 +1852,19 @@ function notEmpty (value) {
  * @api private
  */
 
-function normalize (node, index) {
+function normalize (acc, node) {
+  if (node == null) {
+    return acc
+  }
   if (typeof node === 'string' || typeof node === 'number') {
     var newNode = new TextNode(String(node))
-    newNode.index = index
-    return newNode
+    newNode.index = acc.length
+    acc.push(newNode)
   } else {
-    node.index = index
-    return node
+    node.index = acc.length
+    acc.push(node)
   }
+  return acc
 }
 
 /**
@@ -1854,11 +1934,6 @@ function parseAttributes (attributes) {
     attributes.style = parseStyle(attributes.style)
   }
 
-  // data: { foo: 'bar' }
-  if (attributes.data) {
-    attributes = parseData(attributes)
-  }
-
   // class: { foo: true, bar: false, baz: true }
   // class: ['foo', 'bar', 'baz']
   if (attributes.class) {
@@ -1901,26 +1976,6 @@ function parseStyle (styles) {
 }
 
 /**
- * Parse the dataset
- *
- * @param {Object} attributes
- *
- * @return {Object}
- */
-
-function parseData (attributes) {
-  if (type(attributes.data) !== 'object') {
-    return attributes
-  }
-
-  for (var name in attributes.data) {
-    attributes['data-' + name] = attributes.data[name]
-  }
-
-  return omit(attributes, 'data')
-}
-
-/**
  * Parse the class attribute so it's able to be
  * set in a more user-friendly way
  *
@@ -1950,7 +2005,7 @@ function parseClass (value) {
   return value
 }
 
-},{"array-flatten":10,"component-type":17,"get-uid":20,"object-omit":23,"sliced":29}],10:[function(require,module,exports){
+},{"array-flatten":10,"component-type":17,"get-uid":20,"sliced":25}],10:[function(require,module,exports){
 /**
  * Recursive flatten function. Fastest implementation for array flattening.
  *
@@ -2520,7 +2575,7 @@ Pool.prototype.push = function(el) {
     if (el.tagName.toLowerCase() !== this.tagName) {
         return;
     }
-
+    
     this.storage.push(el);
 };
 
@@ -2564,7 +2619,7 @@ function iterativelyWalk(nodes, cb) {
     if (!('length' in nodes)) {
         nodes = [nodes]
     }
-
+    
     nodes = slice.call(nodes)
 
     while(nodes.length) {
@@ -2634,104 +2689,6 @@ module.exports = Object.assign || function (target, source) {
 };
 
 },{}],23:[function(require,module,exports){
-/*!
- * object.omit <https://github.com/jonschlinkert/object.omit>
- *
- * Copyright (c) 2014-2015 Jon Schlinkert.
- * Licensed under the MIT License
- */
-
-'use strict';
-
-var isObject = require('isobject');
-var forOwn = require('for-own');
-
-module.exports = function omit(obj, props) {
-  if (obj == null || !isObject(obj)) {
-    return {};
-  }
-
-  if (props == null) {
-    return obj;
-  }
-
-  if (typeof props === 'string') {
-    props = [].slice.call(arguments, 1);
-  }
-
-  var o = {};
-
-  if (!Object.keys(obj).length) {
-    return o;
-  }
-
-  forOwn(obj, function (value, key) {
-    if (props.indexOf(key) === -1) {
-      o[key] = value;
-    }
-  });
-  return o;
-};
-},{"for-own":24,"isobject":26}],24:[function(require,module,exports){
-/*!
- * for-own <https://github.com/jonschlinkert/for-own>
- *
- * Copyright (c) 2014-2015, Jon Schlinkert.
- * Licensed under the MIT License.
- */
-
-'use strict';
-
-var forIn = require('for-in');
-var hasOwn = Object.prototype.hasOwnProperty;
-
-module.exports = function forOwn(o, fn, thisArg) {
-  forIn(o, function (val, key) {
-    if (hasOwn.call(o, key)) {
-      return fn.call(thisArg, o[key], key, o);
-    }
-  });
-};
-
-},{"for-in":25}],25:[function(require,module,exports){
-/*!
- * for-in <https://github.com/jonschlinkert/for-in>
- *
- * Copyright (c) 2014-2015, Jon Schlinkert.
- * Licensed under the MIT License.
- */
-
-'use strict';
-
-module.exports = function forIn(o, fn, thisArg) {
-  for (var key in o) {
-    if (fn.call(thisArg, o[key], key, o) === false) {
-      break;
-    }
-  }
-};
-},{}],26:[function(require,module,exports){
-/*!
- * isobject <https://github.com/jonschlinkert/isobject>
- *
- * Copyright (c) 2014 Jon Schlinkert, contributors.
- * Licensed under the MIT License
- */
-
-'use strict';
-
-/**
- * is the value an object, and not an array?
- *
- * @param  {*} `value`
- * @return {Boolean}
- */
-
-module.exports = function isObject(o) {
-  return o != null && typeof o === 'object'
-    && !Array.isArray(o);
-};
-},{}],27:[function(require,module,exports){
 (function (root, factory){
   'use strict';
 
@@ -3002,7 +2959,7 @@ module.exports = function isObject(o) {
   return objectPath;
 });
 
-},{}],28:[function(require,module,exports){
+},{}],24:[function(require,module,exports){
 /**
  * Module Dependencies.
  */
@@ -3041,10 +2998,10 @@ function throttle(fn) {
   };
 }
 
-},{"raf":16}],29:[function(require,module,exports){
+},{"raf":16}],25:[function(require,module,exports){
 module.exports = exports = require('./lib/sliced');
 
-},{"./lib/sliced":30}],30:[function(require,module,exports){
+},{"./lib/sliced":26}],26:[function(require,module,exports){
 
 /**
  * An Array.prototype.slice.call(arguments) alternative
